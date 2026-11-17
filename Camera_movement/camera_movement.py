@@ -150,12 +150,15 @@ class CameraMovement:
                     break
                 camera_movement = cumulative_movements[frame_num]
                 for track_id, track_data in track.items():
+                    # Player/ball tracks and keypoint tracks both store their
+                    # source coordinates in `position`.
                     position = track_data.get("position")
                     if position is not None:
                         position_adjusted = [
                             position[0] - camera_movement[0],
                             position[1] - camera_movement[1],
                         ]
-                        tracks[obj][frame_num][track_id]["position_adjusted"] = (
-                            position_adjusted
-                        )
+                        track_data["position_adjusted"] = position_adjusted
+                        if obj == "keypoints":
+                            # Keep the field name expected by Tracker.draw_frame.
+                            track_data["keypoint_position_adjusted"] = position_adjusted
