@@ -70,16 +70,22 @@ Training/Dataset/test/
 *.cache
 labels.cache
 
-# Video and Media files (Heavy files)
+# Input videos - DO NOT PUSH
 Inputs/*.mp4
 Inputs/*.avi
 Inputs/*.mov
-Outputs/*.mp4
-Outputs/*.avi
-Outputs/*.mov
+Inputs/*.mkv
 !Inputs/.gitkeep
+
+# Output videos - ALLOWED TO PUSH
+# Do not add ignore rules for Outputs video files
+!Outputs/
+!Outputs/*.mp4
+!Outputs/*.avi
+!Outputs/*.mov
+!Outputs/*.mkv
 !Outputs/.gitkeep
 
-# Pickled cache / Stubs (can be re-generated or large)
+# Pickled cache / Stubs
 Stubs/*.pkl
 !Stubs/.gitkeep
