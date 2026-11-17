@@ -1,3 +1,4 @@
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -61,6 +62,8 @@ Training/*.pt
 !Models/.gitkeep
 
 # Dataset & Label caches (Roboflow / YOLO format)
+Training/training.zip
+Training/*.zip
 Training/Dataset/train/
 Training/Dataset/valid/
 Training/Dataset/test/
