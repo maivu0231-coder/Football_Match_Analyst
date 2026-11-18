@@ -6,7 +6,7 @@ from Team_Assigner import TeamAssigner
 from Tracker import Tracker
 from View_Transform import ViewTransformer
 
-input_video_path = "Personal_Project/Football_Analyst_Project/Inputs/Video_Project.mp4"
+input_video_path = "Personal_Project/Football_Analyst_Project/Inputs/Video_Input.mp4"
 output_video_path = "Personal_Project/Football_Analyst_Project/Outputs/Match_Video_R.mp4"
 stub_path = "Personal_Project/Football_Analyst_Project/Stubs/stub.pkl"
 camera_stub_path = "Personal_Project/Football_Analyst_Project/Stubs/camera_movement_stub.pkl"
@@ -17,7 +17,7 @@ tracks = tracker.get_objects_tracked_from_video(
     input_video_path,
     batch_size=20,
     # Re-run detection so the temporal class stabilization is applied to fresh tracks.
-    use_stub=True,
+    use_stub=False,
     stub_path=stub_path,
 )
 

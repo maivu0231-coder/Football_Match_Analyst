@@ -22,6 +22,49 @@ class Tracker:
 
         self.keypoint_model =YOLO(keypoint_model_path) if keypoint_model_path else None
         self.tracker = None
+        # Stateful ball filtering is kept across inference batches.
+        self._previous_ball_position = None
+        self._previous_ball_frame = None
+        self._previous_gray_frame = None
+        self._ball_static_frames = 0
+        self._ball_last_motion_position = None
+
+    @staticmethod
+    def _ball_center(box):
+        x1, y1, x2, y2 = map(float, box)
+        return np.array([(x1 + x2) / 2.0, (y1 + y2) / 2.0], dtype=np.float32)
+
+    @staticmethod
+    def _ball_box_is_valid(box, frame_shape):
+        x1, y1, x2, y2 = map(float, box)
+        width, height = x2 - x1, y2 - y1
+        frame_h, frame_w = frame_shape[:2]
+        area = width * height
+        ratio = width / height if height > 0 else float("inf")
+        # A ball is compact and close to round. The previous 0.25% area limit
+        # admitted boxes thousands of pixels wide on broadcast footage.
+        return (
+            width >= 2
+            and height >= 2
+            and area <= frame_w * frame_h * 0.0008
+            and 0.55 <= ratio <= 1.8
+        )
+
+    @staticmethod
+    def _ball_motion_score(box, previous_gray, current_gray):
+        """Count changed pixels in the candidate ROI; scores are in pixel units."""
+        x1, y1, x2, y2 = map(int, box)
+        h, w = current_gray.shape[:2]
+        x1, x2 = max(0, x1), min(w, x2)
+        y1, y2 = max(0, y1), min(h, y2)
+        if x2 <= x1 or y2 <= y1:
+            return 0
+        before = previous_gray[y1:y2, x1:x2]
+        after = current_gray[y1:y2, x1:x2]
+        delta = cv2.absdiff(before, after)
+        # Ignore small compression/lighting changes so the >=7 score reflects
+        # meaningful motion in the tiny ball-sized ROI.
+        return int(cv2.countNonZero(cv2.threshold(delta, 24, 255, cv2.THRESH_BINARY)[1]))
 
     def _init_tracker(self, fps: int = 24) -> sv.ByteTrack:
         return sv.ByteTrack(
@@ -162,7 +205,8 @@ class Tracker:
                         results,
                         keypoint_results,
                         tracks,
-                        frame_idx
+                        frame_idx,
+                        frames_batch,
                     )
 
                     frame_idx += len(frames_batch)
@@ -198,7 +242,8 @@ class Tracker:
                     results,
                     keypoint_results,
                     tracks,
-                    frame_idx
+                    frame_idx,
+                    frames_batch,
                 )
 
                 frame_idx += len(frames_batch)
@@ -256,7 +301,7 @@ class Tracker:
 
         
     def _process_detections_to_tracks(
-        self, results, keypoint_results, tracks, start_idx
+        self, results, keypoint_results, tracks, start_idx, frames=None
     ) -> None:
 
         for offset, result in enumerate(results):
@@ -326,6 +371,10 @@ class Tracker:
                 k for k, v in cls_names.items() if v == "ball"
             ]
 
+            current_gray = None
+            if frames is not None and offset < len(frames):
+                current_gray = cv2.cvtColor(frames[offset], cv2.COLOR_BGR2GRAY)
+
             if ball_cls_ids:
 
                 ball_id = ball_cls_ids[0]
@@ -334,18 +383,62 @@ class Tracker:
                 if np.any(ball_mask):
 
                     ball_dets = detections[ball_mask]
+                    valid = []
+                    for bbox, confidence in zip(ball_dets.xyxy, ball_dets.confidence):
+                        bbox = bbox.astype(float)
+                        confidence = float(confidence)
+                        if not self._ball_box_is_valid(bbox, result.orig_shape):
+                            continue
+                        # Frame difference motion gate (>= 7 changed pixels).
+                        if current_gray is not None and self._previous_gray_frame is not None:
+                            motion_score = self._ball_motion_score(bbox, self._previous_gray_frame, current_gray)
+                            # Keep same-location candidates long enough to detect and
+                            # clear a stationary false positive after seven frames.
+                            stationary_candidate = (
+                                self._previous_ball_position is not None
+                                and np.linalg.norm(self._ball_center(bbox) - self._previous_ball_position) < 1.0
+                            )
+                            if motion_score < 7 and not stationary_candidate:
+                                continue
+                        valid.append((bbox.tolist(), confidence, self._ball_center(bbox)))
 
-                    # Get ball with highest confidence
-                    best_idx = np.argmax(ball_dets.confidence)
+                    if valid:
+                        if self._previous_ball_position is None:
+                            # First observation: confidence gate and highest confidence.
+                            eligible = [item for item in valid if item[1] >= 0.35]
+                            selected = max(eligible, key=lambda item: item[1]) if eligible else None
+                        else:
+                            # Minimize distance - 40 * confidence from prior position.
+                            selected = min(
+                                valid,
+                                key=lambda item: float(np.linalg.norm(item[2] - self._previous_ball_position)) - 40.0 * item[1],
+                            )
 
-                    best_bbox = ball_dets.xyxy[best_idx].tolist()
-                    best_conf = float(ball_dets.confidence[best_idx])
+                        if selected is not None:
+                            best_bbox, best_conf, position = selected
+                            if self._ball_last_motion_position is not None and np.linalg.norm(position - self._ball_last_motion_position) < 1.0:
+                                self._ball_static_frames += 1
+                            else:
+                                self._ball_static_frames = 0
+                                self._ball_last_motion_position = position.copy()
 
-                    tracks["ball"][curr_frame_idx][1] = {
-                        "bbox": best_bbox,
-                        "confidence": best_conf,
-                        "predicted": False,
-                    }
+                            if self._ball_static_frames >= 7:
+                                # Treat a persistent stationary detection as a false positive.
+                                self._previous_ball_position = None
+                                self._previous_ball_frame = None
+                                self._ball_last_motion_position = None
+                                self._ball_static_frames = 0
+                            else:
+                                self._previous_ball_position = position
+                                self._previous_ball_frame = curr_frame_idx
+                                tracks["ball"][curr_frame_idx][1] = {
+                                    "bbox": best_bbox,
+                                    "confidence": best_conf,
+                                    "predicted": False,
+                                }
+
+            if current_gray is not None:
+                self._previous_gray_frame = current_gray
             #player and referee detection
             person_mask = np.isin(
                 detections.class_id,
