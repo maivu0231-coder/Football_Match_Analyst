@@ -1,192 +1,204 @@
-# ⚽ Football Analyst AI - Hệ Thống Phân Tích Video Bóng Đá Tự Động
+# Football Analyst Project
 
-Dự án áp dụng **Computer Vision** và **Deep Learning** để tự động theo dõi, phân tích chiến thuật và đo lường thể lực của cầu thủ cũng như chuyển động của bóng trong các trận đấu bóng đá từ video quay phát sóng truyền hình.
+Dự án phân tích video bóng đá bằng computer vision: phát hiện và tracking cầu thủ, trọng tài, bóng; gán đội theo màu áo; chiếu vị trí lên sơ đồ sân; tính vận tốc, quãng đường và thống kê kiểm soát bóng.
 
----
+## Mục lục
 
-## 🌟 Các Tính Năng Nổi Bật
+- [Football Analyst Project](#football-analyst-project)
+  - [Mục lục](#mục-lục)
+  - [Project Title](#project-title)
+  - [Demo](#demo)
+  - [Introduction](#introduction)
+  - [Features](#features)
+  - [System Architecture](#system-architecture)
+    - [Pipeline hiện tại (`main.py`)](#pipeline-hiện-tại-mainpy)
+    - [Hướng tiếp cận thử nghiệm trong `experiment/`](#hướng-tiếp-cận-thử-nghiệm-trong-experiment)
+  - [Technologies Used](#technologies-used)
+  - [Model \& Training](#model--training)
+  - [Installation](#installation)
+    - [Yêu cầu](#yêu-cầu)
+    - [Cài đặt môi trường](#cài-đặt-môi-trường)
+  - [Usage](#usage)
+    - [1. Chuẩn bị đường dẫn](#1-chuẩn-bị-đường-dẫn)
+    - [2. Chạy](#2-chạy)
+    - [3. Stub/cache](#3-stubcache)
+    - [4. Tinh chỉnh minimap](#4-tinh-chỉnh-minimap)
+  - [Results \& Evaluation](#results--evaluation)
+  - [Project Structure](#project-structure)
+  - [References](#references)
 
-1. **Phát hiện & Theo dõi Đối tượng (Object Detection & Multi-Object Tracking)**
-   - Nhận diện 4 lớp đối tượng chính: Cầu thủ (`player`), Thủ môn (`goalkeeper`), Trọng tài (`referee`) và Bóng (`ball`) bằng mô hình **YOLOv8** tùy chỉnh.
-   - Duy trì ID cầu thủ ổn định qua từng khung hình với thuật toán **ByteTrack** (thông qua thư viện `supervision`).
-   - Tích hợp trích xuất khung xương, khớp nối cơ thể (Keypoints) với **YOLOv8x-pose**.
+## Project Title
 
-2. **Tự động Phân Biệt Màu Áo & Chia Đội (Team Assignment & Color Clustering)**
-   - Cắt vùng nửa thân trên (áo đấu) của từng cầu thủ và lọc bỏ màu nền sân cỏ.
-   - Ứng dụng giải thuật gom cụm **K-Means Clustering** trên không gian màu RGB để tự động xác định 2 màu áo chủ đạo của 2 đội và gán màu đại diện cho từng cầu thủ.
+**Football Analyst AI — Phân tích và trực quan hóa trận đấu bóng đá**
 
-3. **Bù Trừ Chuyển Động Camera (Camera Movement Estimation)**
-   - Sử dụng giải thuật **Lucas-Kanade Optical Flow** (`cv2.calcOpticalFlowPyrLK`) trên các đặc trưng ổn định (`goodFeaturesToTrack`) ở hai bên rìa khung hình.
-   - Tính toán vector dịch chuyển góc quay camera tích lũy qua từng khung hình để bù trừ tọa độ cầu thủ, phản ánh đúng chuyển động thực tế trên sân.
 
-4. **Chuyển Đổi Góc Nhìn Phối Cảnh (Perspective Transform / Homography)**
-   - Ánh xạ tọa độ pixel từ góc nhìn camera phối cảnh (2D perspective frame) sang tọa độ phẳng chuẩn tính theo mét trên sân đấu thực tế (2D Pitch Dimensions) bằng ma trận Homography (`cv2.getPerspectiveTransform`).
+## Demo
 
-5. **Đo Lường Khoảng Cách & Vận Tốc Cầu Thủ (Distance & Velocity Measurement)**
-   - Tính toán tổng quãng đường di chuyển (mét) và vận tốc tức thời (km/h) của mỗi cầu thủ theo thời gian thực dựa trên vị trí đã hiệu chỉnh góc nhìn.
-   - Sử dụng kỹ thuật cửa sổ trượt (sliding window) theo frame-rate để làm mượt chỉ số đo đạc.
+Video kết quả mẫu được lưu tại `Outputs/Match_Video_R.mp4`. Ảnh dưới đây là khung hình trích từ kết quả:
+![Ảnh demo kết quả](image-1.png)
 
-6. **Khôi Phục Quỹ Đạo Bóng (Ball Interpolation)**
-   - Xử lý tình trạng bóng bị che khuất hoặc bay nhanh mất dấu (occlusion) bằng phương pháp nội suy chuỗi thời gian (`pandas interpolation` & `bfill`).
-7. **Tối Ưu Hóa & Caching (Stubs & Generator Stream)**
-   - Hỗ trợ lưu cache trung gian dạng pickle (`.pkl` trong thư mục `Stubs/`) giúp quá trình tinh chỉnh thuật toán hoặc vẽ lại video diễn ra tức thì mà không cần inference lại toàn bộ mạng deep learning.
-   - Cơ chế đọc và ghi video dạng **Frame Generator Streaming** giúp tiết kiệm tối đa bộ nhớ RAM khi xử lý video dung lượng lớn và độ phân giải cao.
+## Introduction
 
----
+Project xử lý video trận đấu quay từ camera truyền hình. Hệ thống kết hợp phát hiện đối tượng, theo dõi ID qua các frame và nhận diện landmark trên mặt sân. Các landmark được ghép với tọa độ sân chuẩn để ước lượng homography cho từng frame; từ đó vị trí cầu thủ, trọng tài và bóng có thể được quy đổi lên minimap. Tọa độ sân theo mét cũng là đầu vào cho phép tính vận tốc và quãng đường.
 
-## 🏗️ Kiến Trúc Luồng Xử Lý (Pipeline Architecture)
+Camera lia, zoom, che khuất, góc nhìn phối cảnh và chất lượng keypoint đều ảnh hưởng đến độ chính xác. Vì vậy kết quả minimap và các chỉ số vật lý là ước lượng phụ thuộc chất lượng video/model, không phải số liệu đo đạc chính xác tuyệt đối.
 
-```
-[Video Đầu Vào (.mp4)]
-         │
-         ▼
-[1. YOLOv8 Detection + ByteTrack + YOLO-Pose] ──► Lưu Stubs (stub.pkl)
-         │
-         ▼
-[2. K-Means Jersey Color Clustering] ──────────► Phân chia Đội 1 & Đội 2
-         │
-         ▼
-[3. Ball Trajectory Interpolation / Kalman] ───► Khôi phục quỹ đạo bóng
-         │
-         ▼
-[4. Optical Flow Camera Movement Tracker] ─────► Bù trừ rung lắc/lia máy
-         │
-         ▼
-[5. Homography Perspective Transform] ─────────► Tọa độ mét trên mặt sân
-         │
-         ▼
-[6. Measurement Engine] ───────────────────────► Vận tốc (km/h) & Quãng đường (m)
-         │
-         ▼
-[7. Frame Annotation & Video Streamer] ────────► [Video Kết Quả (.mp4)]
-```
+## Features
 
----
+- Phát hiện và tracking cầu thủ, trọng tài và bóng; bóng được xử lý bởi detector riêng và có bước nội suy khi bị mất dấu.
+- Gán cầu thủ vào hai đội dựa trên đặc trưng màu áo.
+- Phát hiện các keypoint/landmark sân bằng model keypoint.
+- Ước lượng homography từ landmark model sang tọa độ sân mục tiêu, dùng ghép ID landmark và RANSAC để loại correspondence ngoại lai.
+- Tạo minimap sân bóng, chiếu vị trí các đối tượng lên map và ghép minimap bán trong suốt vào video.
+- Tính vận tốc (km/h) và quãng đường tích lũy (m) của cầu thủ từ tọa độ sân đã chiếu (`position_pitch`).
+- Ước lượng thời lượng kiểm soát bóng theo đội.
+- Lưu kết quả inference trung gian dạng pickle stub để chạy lại nhanh khi chỉ chỉnh phần hiển thị hoặc phân tích.
 
-## 📁 Cấu Trúc Thư Mục Dự Án
+## System Architecture
 
-```
-Football_Analyst_Project/
-├── Camera_movement/               # Xử lý chuyển động camera
-│   ├── __init__.py
-│   └── camera_movement.py         # Optical flow Lucas-Kanade & bù sai số dời tọa độ
-├── Color_Analyst/                 # Phân tích màu sắc & thử nghiệm K-Means
-│   └── color_analyst.ipynb
-├── Distance_And_Velocity/         # Tính toán chỉ số vật lý của cầu thủ
-│   ├── __init__.py
-│   └── distance_and_velocity.py   # Đo tốc độ (km/h), quãng đường (m) & vẽ overlay
-├── Inputs/                        # Video đầu vào (Match_Video.mp4, ...)
-├── Models/                        # Chứa trọng số các mô hình Deep Learning
-│   ├── best.pt                    # Trọng số YOLOv8 custom cho phát hiện bóng/cầu thủ
-│   ├── last.pt
-│   └── yolov8x-pose.pt            # Trọng số YOLOv8 pose cho phát hiện khung xương
-├── Outputs/                       # Video và hình ảnh sau khi phân tích hoàn tất
-├── Stubs/                         # Dữ liệu cache pickle để tăng tốc thử nghiệm
-│   ├── camera_movement_stub.pkl
-│   └── stub.pkl
-├── Team_Assigner/                 # Phân loại đội theo màu áo thi đấu
-│   ├── __init__.py
-│   └── team_assigner.py
-├── Tracker/                       # Tracking đa đối tượng & trực quan hóa
-│   ├── __init__.py
-│   ├── Tracker.py                 # Tích hợp ByteTrack, YOLO và vẽ annotations
-│   └── fix.py
-├── Training/                      # Huấn luyện mô hình YOLO
-│   ├── Dataset/                   # Dữ liệu huấn luyện (Roboflow YOLO format)
-│   ├── model_training.ipynb
-│   ├── training.py                # Script huấn luyện với Ultralytics
-│   └── yolov8m.pt
-├── Utils/                         # Các hàm tiện ích hỗ trợ
-│   ├── __init__.py
-│   ├── compute_ultils.py          # Tính tọa độ tâm, vị trí chân cầu thủ
-│   └── video_ultils.py            # Đọc, ghi và stream video bằng OpenCV
-├── main.py                        # Điểm khởi chạy chính toàn bộ quy trình phân tích
-├── requirements.txt               # Danh sách thư viện phụ thuộc
-├── .gitignore                     # Cấu hình bỏ qua tệp nhị phân, video, weights
-└── README.md                      # Tài liệu hướng dẫn dự án
+### Pipeline hiện tại (`main.py`)
+
+```text
+Video đầu vào
+   │
+   ├─ Detector/tracker ───────────────► tracks cầu thủ, trọng tài, bóng
+   ├─ Keypoint model ─────────────────► landmark sân theo từng frame
+   ├─ TeamAssigner ───────────────────► nhãn đội / màu áo
+   ├─ Ball interpolation ─────────────► quỹ đạo bóng liên tục hơn
+   ├─ CameraMovement (optical flow) ──► ước lượng dịch chuyển camera
+   ├─ MiniMap / homography RANSAC ────► position_pitch và position_minimap
+   ├─ Measurement ────────────────────► vận tốc và quãng đường
+   ├─ Ball possession ────────────────► thống kê kiểm soát bóng
+   └─ Annotation ─────────────────────► video đầu ra
 ```
 
----
+Pipeline được gọi từ `main.py`; phần chi tiết nằm trong các package dưới `src/`.
 
-## ⚙️ Yêu Cầu Môi Trường & Cài Đặt
+### Hướng tiếp cận thử nghiệm trong `experiment/`
 
-### 1. Yêu cầu hệ thống
-- **Hệ điều hành**: Windows 10/11, Ubuntu 20.04+ hoặc macOS.
-- **Python**: Phiên bản 3.10 - 3.12 (khuyến nghị `Python 3.12`).
-- **GPU**: NVIDIA GPU với CUDA 11.8 / 12.x (khuyến nghị để tăng tốc độ inference mô hình).
+`experiment/View_Transform` và `experiment/Camera_movement` là **phiên bản tiếp cận đầu tiên**, tách biệt với cách chiếu landmark theo minimap đang dùng trong `src/Minimap`:
 
-### 2. Cài đặt môi trường
+1. Dùng Lucas–Kanade optical flow để theo dõi các feature giữa hai frame liên tiếp.
+2. Từ flow, ước lượng độ dịch chuyển camera; cộng dồn chuyển động và trừ phần này khỏi vị trí đối tượng để bù camera movement.
+3. Chọn thủ công **bốn điểm cố định trong video** (tọa độ pixel ở một góc nhìn cụ thể) và ghép chúng với bốn đỉnh vùng sân mục tiêu.
+4. Tính homography bằng `cv2.getPerspectiveTransform` để đổi tọa độ pixel sang mặt phẳng sân.
 
-1. **Khởi tạo và kích hoạt môi trường ảo (Virtual Environment):**
-   ```bash
-   # Tạo virtual environment
-   python -m venv venv
+Cách thử nghiệm này phụ thuộc vào bốn điểm đã chọn và góc camera. Khi camera đổi góc đáng kể, các điểm cố định không còn đại diện đúng cho frame mới; vì vậy không nên xem đây là homography thích nghi cho mọi frame.
 
-   # Kích hoạt trên Windows (PowerShell):
-   .\venv\Scripts\Activate.ps1
-   # Hoặc trên Linux/macOS:
-   source venv/bin/activate
-   ```
+## Technologies Used
 
-2. **Cài đặt PyTorch phù hợp với phần cứng:**
-   - Nếu có GPU NVIDIA (CUDA 12.1):
-     ```bash
-     pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-     ```
-   - Nếu chỉ dùng CPU:
-     ```bash
-     pip install torch torchvision
-     ```
+- Python
+- OpenCV: đọc/ghi video, xử lý ảnh, optical flow và phép biến đổi phối cảnh
+- Ultralytics YOLO: inference các model detection/keypoint
+- PyTorch / Torchvision: runtime cho model
+- NumPy, Pandas: xử lý tọa độ và dữ liệu tracking
+- scikit-learn: clustering màu áo
+- Supervision: hỗ trợ xử lý/tracking đối tượng (nếu được gọi bởi cấu hình hiện tại)
 
-3. **Cài đặt các gói phụ thuộc từ `requirements.txt`:**
-   ```bash
-   pip install -r requirements.txt
-   ```
+Danh sách package nằm trong `requirements.txt`. Các phiên bản trong file là mức tối thiểu; môi trường PyTorch/CUDA cần chọn tương thích với máy.
 
----
+## Model & Training
 
-## 🚀 Hướng Dẫn Sử Dụng
+Các trọng số model được đặt trong `src/Models/`, gồm các file cho phát hiện bóng/cầu thủ và keypoint sân, ví dụ `balltracker.pt` và `downloaded_pitch.pt`. `Tracker` chịu trách nhiệm khởi tạo detector và ball model; model keypoint cung cấp landmark phục vụ homography.
 
-### 1. Chạy phân tích video đầy đủ
+Thư mục hiện tại chứa trọng số nhưng không kèm đầy đủ dataset, cấu hình huấn luyện và script training có thể tái lập. Do đó README này không khẳng định nguồn dataset, số epoch hay metric đánh giá model. Muốn huấn luyện lại cần chuẩn bị dataset và cấu hình tương ứng với model, sau đó cập nhật đường dẫn trọng số trong mã nguồn.
 
-Mở tệp `main.py` và kiểm tra lại đường dẫn video đầu vào và đầu ra nếu cần:
+**Lưu ý correspondence landmark:** model ID và ID điểm trên sân mục tiêu phải khớp chính xác. Bản đồ ID hiện được khai báo trong `MiniMap`; các ID không có mapping sẽ không được dùng để fit homography. Chất lượng homography còn phụ thuộc số lượng, phân bố không gian, confidence và độ chính xác của keypoint trong frame.
+
+## Installation
+
+### Yêu cầu
+
+- Python 3.10–3.12 (nên dùng phiên bản tương thích với bộ PyTorch đã cài)
+- Windows, Linux hoặc macOS
+- GPU NVIDIA/CUDA là tùy chọn; CPU có thể chạy chậm hơn
+- Video đầu vào và các file trọng số trong `src/Models/`
+
+### Cài đặt môi trường
+
+Từ thư mục gốc dự án:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+```
+
+Cài PyTorch/Torchvision phù hợp với CPU hoặc phiên bản CUDA trên máy theo hướng dẫn chính thức của PyTorch, sau đó cài các dependency còn lại:
+
+```powershell
+pip install -r requirements.txt
+```
+
+Trên Linux/macOS, kích hoạt môi trường bằng `source .venv/bin/activate`.
+
+## Usage
+
+### 1. Chuẩn bị đường dẫn
+
+Mở `main.py` và kiểm tra các biến `input_video_path`, `output_video_path`, `stub_path`, `camera_stub_path`. Các đường dẫn hiện tại trong file được viết theo cấu trúc thư mục cha `Personal_Project/Football_Analyst_Project/...`; nếu chạy trực tiếp từ thư mục dự án hoặc đặt project ở nơi khác, hãy sửa thành đường dẫn phù hợp, ví dụ:
 
 ```python
-input_video_path = "Personal_Project/Football_Analyst_Project/Inputs/Match_Video.mp4"
-output_video_path = "Personal_Project/Football_Analyst_Project/Outputs/Match_Video_R.mp4"
+input_video_path = "Inputs/videomy.mp4"
+output_video_path = "Outputs/Match_Video_R.mp4"
+stub_path = "Stubs/stub_minimap_ball_v3.pkl"
+camera_stub_path = "Stubs/camera_movement_stub.pkl"
 ```
 
-Sau đó chạy script:
-```bash
+Đảm bảo các thư mục `Outputs/` và `Stubs/` tồn tại, video có thể mở được và đường dẫn trọng số trong `src/Tracker/Tracker.py` trỏ tới file model có thật.
+
+### 2. Chạy
+
+```powershell
 python main.py
 ```
 
-*Lưu ý về Stub Cache*: 
-- Trong `main.py`, tham số `use_stub=True` được kích hoạt mặc định.
-- Nếu bạn thay đổi video đầu vào hoặc muốn nhận diện lại từ đầu, hãy đặt `use_stub=False` hoặc xóa các tệp `.pkl` trong thư mục `Stubs/`.
+Video đã annotate được ghi theo `output_video_path`.
 
-### 2. Huấn luyện mô hình YOLO phát hiện đối tượng mới
+### 3. Stub/cache
 
-Để tự huấn luyện mô hình với dataset riêng hoặc dataset từ Roboflow:
-```bash
-python Training/training.py
+Trong `main.py`, `use_stub=True` sẽ đọc kết quả đã cache nếu stub tồn tại. Khi đổi video, model, thông số inference hoặc logic tracking, hãy dùng đường dẫn stub mới hoặc đặt `use_stub=False` để tạo lại dữ liệu. Stub detection và stub camera movement là hai cache riêng; cache cũ có thể không còn tương thích với thay đổi mới.
+
+### 4. Tinh chỉnh minimap
+
+Kiểm tra `keypoint_to_target` và `target_points` trong `src/Minimap/minimap.py` để bảo đảm các model keypoint được ghép đúng với landmark sân. Không nên thêm mapping chỉ dựa trên thứ tự ID nếu chưa xác minh bằng ảnh có nhãn. Khi không đủ correspondence/inlier đáng tin cậy, phép chiếu có thể giữ homography gần nhất trong một số frame hoặc thiếu vị trí mới; đây là giới hạn cần cân nhắc khi đánh giá output.
+
+## Results & Evaluation
+
+Output hiện trực quan hóa tracking, màu đội, minimap, vị trí bóng và các chỉ số vận tốc/quãng đường, cùng thông tin kiểm soát bóng khi bật. `Outputs/Match_Video_R.mp4` là video kết quả mẫu được lưu trong project.
+
+Project chưa kèm bộ test/benchmark định lượng ground-truth cho detection, tracking, homography hoặc vận tốc. Cần đánh giá thêm trên các đoạn video có góc quay khác nhau, đặc biệt các đoạn lia/zoom, landmark ít hoặc bị che, trước khi dùng chỉ số như kết quả đo chính xác. Sai correspondence keypoint có thể làm vị trí trên minimap và vận tốc/quãng đường sai dù tracker vẫn giữ ID ổn định.
+
+## Project Structure
+
+```text
+Football_Analyst_Project/
+├── experiment/
+│   ├── Camera_movement/       # Optical flow và ước lượng camera movement (hướng thử nghiệm đầu tiên)
+│   └── View_Transform/        # Homography từ 4 cặp điểm cố định (hướng thử nghiệm đầu tiên)
+├── Inputs/                    # Video đầu vào
+├── Outputs/                   # Video/ảnh kết quả
+├── Stubs/                     # Cache pickle của tracking và camera movement
+├── src/
+│   ├── Color_Analyst/         # Notebook phân tích màu
+│   ├── Constant/              # Hằng số dùng trong project
+│   ├── Distance_And_Velocity/ # Tính và vẽ quãng đường, vận tốc
+│   ├── Minimap/               # Sân mục tiêu, mapping keypoint, homography, minimap
+│   ├── Models/                # Trọng số .pt
+│   ├── Team_Assigner/         # Gán đội theo màu áo
+│   ├── Tracker/               # Detection, tracking và annotation video
+│   └── Utils/                 # Hàm tiện ích tọa độ và video
+├── main.py                    # Điều phối pipeline
+├── requirements.txt           # Python dependencies
+└── README.md
 ```
-Cấu hình tập dữ liệu nằm tại `Training/Dataset/data.yaml`.
 
----
+## References
 
-## 🎨 Minh Họa Trực Quan Hóa (Visualization Elements)
-
-Khi video được xuất ra tại thư mục `Outputs/`, các thông tin sau sẽ được vẽ trực tiếp lên khung hình:
-- **Hình Elip dưới chân cầu thủ**: Được tô viền theo màu sắc đại diện của đội bóng (Đội 1 hoặc Đội 2), đi kèm số ID của cầu thủ.
-- **Hình tam giác ngược màu vàng**: Đánh dấu vị trí bóng trên sân.
-- **Chỉ số Vận Tốc & Quãng Đường**: Hiển thị dạng chữ số ngay bên dưới cầu thủ (ví dụ: `21.45 km/h`, `45.20 m`).
-- **Bảng thông tin Camera Movement (Góc trên bên trái)**: Hiển thị độ dịch chuyển pixel `X` và `Y` của camera trong khung hình hiện tại.
-
----
-
-## 📜 Giấy Phép & Nguồn Tham Khảo
-
-- **Dataset**: Cung cấp theo giấy phép CC BY 4.0 từ Roboflow Universe (`football-players-detection-3zvbc`).
-- **YOLOv8**: Bản quyền thuộc về [Ultralytics](https://github.com/ultralytics/ultralytics).
-- **ByteTrack & Supervision**: [Roboflow Supervision](https://github.com/roboflow/supervision).
+- [Ultralytics documentation](https://docs.ultralytics.com/)
+- [OpenCV documentation](https://docs.opencv.org/)
+- [OpenCV: Optical Flow](https://docs.opencv.org/4.x/d4/dee/tutorial_optical_flow.html)
+- [PyTorch installation guide](https://pytorch.org/get-started/locally/)
+- [NumPy documentation](https://numpy.org/doc/)
+- [Pandas documentation](https://pandas.pydata.org/docs/)
+- [scikit-learn documentation](https://scikit-learn.org/stable/)

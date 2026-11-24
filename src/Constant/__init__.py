@@ -1,0 +1,1 @@
+from .constant import width, height, penalty_area_width, penalty_area_height, goal_area_width, goal_area_height

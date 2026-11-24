@@ -1,16 +1,12 @@
-
-# Byte-compiled / optimized / DLL files
+# Python bytecode and native build artifacts
 __pycache__/
 *.py[cod]
 *$py.class
-
-# C extensions
 *.so
 
-# Distribution / packaging
+# Packaging/build outputs
 .Python
 build/
-develop-eggs/
 dist/
 downloads/
 eggs/
@@ -19,7 +15,6 @@ lib/
 lib64/
 parts/
 sdist/
-var/
 wheels/
 share/python-wheels/
 *.egg-info/
@@ -27,65 +22,64 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# Virtual environments
+# Environments and secrets
 .env
-.venv
-env/
+.env.*
+!.env.example
+.venv/
 venv/
 ENV/
 env.bak/
 venv.bak/
 
-# Jupyter Notebook checkpoints
-.ipynb_checkpoints
-*/.ipynb_checkpoints/*
+# Notebook checkpoints and caches
+.ipynb_checkpoints/
+*.cache
+labels.cache
 
-# IDE and editors
+# Editors and operating system files
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-
-# Operating System files
 .DS_Store
 Thumbs.db
 desktop.ini
 
-# Model weights (Large files)
+# Model weights are large; keep them out of ordinary Git history.
 *.pt
 *.pth
 *.onnx
 *.engine
-Models/*.pt
-Training/*.pt
-!Models/.gitkeep
+!src/Models/.gitkeep
 
-# Dataset & Label caches (Roboflow / YOLO format)
+# Datasets and exported archives
 Training/training.zip
 Training/*.zip
 Training/Dataset/train/
 Training/Dataset/valid/
 Training/Dataset/test/
-*.cache
-labels.cache
 
-# Input videos - DO NOT PUSH
+# Inference caches (can be regenerated)
+Stubs/*.pkl
+!Stubs/.gitkeep
+
+# Input videos are not needed in the GitHub repository.
 Inputs/*.mp4
 Inputs/*.avi
 Inputs/*.mov
 Inputs/*.mkv
 !Inputs/.gitkeep
 
-# Output videos - ALLOWED TO PUSH
-# Do not add ignore rules for Outputs video files
+# Keep generated result videos/images in Git so they can be viewed/downloaded.
+# GitHub's normal per-file limit is 100 MB; use Git LFS for larger media.
 !Outputs/
 !Outputs/*.mp4
 !Outputs/*.avi
 !Outputs/*.mov
 !Outputs/*.mkv
+!Outputs/*.png
+!Outputs/*.jpg
+!Outputs/*.jpeg
 !Outputs/.gitkeep
-
-# Pickled cache / Stubs
-Stubs/*.pkl
-!Stubs/.gitkeep
