@@ -229,8 +229,8 @@ class MiniMap:
     def calculate_homography(
         self,
         image_keypoints: Mapping[int, object],
-        confidence_threshold: float = 0.1,
-        ransac_threshold: float = 14.0,
+        confidence_threshold: float = 0.15,
+        ransac_threshold: float = 12.0,
         min_inliers: int = 4,
         min_inlier_ratio: float = 0.15,
         keypoint_to_target: Optional[Mapping[int, int]] = None,
@@ -239,7 +239,9 @@ class MiniMap:
         if keypoint_to_target is not None:
             id_mapping.update({int(k): int(v) for k, v in keypoint_to_target.items()})
 
-        source, destination, model_ids, target_ids = [], [], [], []
+        # A target landmark must contribute at most one correspondence. Duplicate
+        # model IDs mapped to the same pitch point can make RANSAC degenerate.
+        correspondences = {}
         for raw_id, value in image_keypoints.items():
             try:
                 model_id = int(raw_id)
@@ -253,10 +255,14 @@ class MiniMap:
             position, confidence = self._position_and_confidence(value)
             if position is None or confidence < confidence_threshold:
                 continue
-            source.append(position)
-            destination.append(self.target_points[target_id])
-            model_ids.append(model_id)
-            target_ids.append(target_id)
+            previous = correspondences.get(target_id)
+            if previous is None or confidence > previous[0]:
+                correspondences[target_id] = (confidence, model_id, position)
+
+        target_ids = list(correspondences)
+        model_ids = [correspondences[target_id][1] for target_id in target_ids]
+        source = [correspondences[target_id][2] for target_id in target_ids]
+        destination = [self.target_points[target_id] for target_id in target_ids]
 
         info = {
             "matched_model_ids": model_ids,
@@ -291,6 +297,8 @@ class MiniMap:
             dst,
             method=cv2.RANSAC,
             ransacReprojThreshold=float(ransac_threshold),
+            maxIters=5000,
+            confidence=0.995,
         )
         if homography is None or mask is None or not np.isfinite(homography).all():
             info["reason"] = "RANSAC could not estimate a homography"
@@ -298,6 +306,20 @@ class MiniMap:
             return None, info
 
         inliers = mask.reshape(-1).astype(bool)
+        # Refit from the RANSAC consensus set, then reject a numerically valid
+        # but geometrically poor result using its actual inlier reprojection error.
+        if int(inliers.sum()) >= 4:
+            refined, _ = cv2.findHomography(src[inliers], dst[inliers], method=0)
+            if refined is not None and np.isfinite(refined).all():
+                homography = refined
+                projected = cv2.perspectiveTransform(
+                    src.astype(np.float64).reshape(-1, 1, 2), homography
+                ).reshape(-1, 2)
+                errors = np.linalg.norm(projected - dst, axis=1)
+                inliers = errors <= float(ransac_threshold)
+                info["median_inlier_reprojection_error"] = (
+                    float(np.median(errors[inliers])) if inliers.any() else None
+                )
         info["inlier_model_ids"] = [i for i, keep in zip(model_ids, inliers) if keep]
         info["inlier_target_ids"] = [i for i, keep in zip(target_ids, inliers) if keep]
         info["outlier_model_ids"] = [i for i, keep in zip(model_ids, inliers) if not keep]
@@ -331,9 +353,9 @@ class MiniMap:
         info["usable"] = source_inliers_are_2d and target_inliers_are_2d
         info["success"] = (
             info["usable"]
-            and info["inlier_count"] >= int(min_inliers)
-            and info["inlier_ratio"] >= float(min_inlier_ratio)
-            and info["inlier_target_coverage"] >= 0.01
+            and info["inlier_count"] >= 4
+            and info["inlier_ratio"] >= 0.25
+            and info["inlier_target_coverage"] >= 0.003
         )
         if not info["usable"]:
             info["reason"] = "RANSAC inliers are insufficient or collinear"
@@ -606,6 +628,25 @@ class MiniMap:
         if first_valid is not None:
             for frame_index in range(first_valid):
                 homographies[frame_index] = homographies[first_valid]
+
+        # Bridge short internal detection gaps using valid fits on both sides.
+        # Holding the previous transform alone drifts during camera pans, while
+        # leaving these frames empty removes player pitch positions entirely.
+        max_interpolated_homography_gap = 12
+        valid_indices = [i for i, matrix in enumerate(homographies) if matrix is not None]
+        for left_index, right_index in zip(valid_indices, valid_indices[1:]):
+            gap = right_index - left_index - 1
+            if gap <= 0 or gap > max_interpolated_homography_gap:
+                continue
+            left = homographies[left_index]
+            right = homographies[right_index]
+            for frame_index in range(left_index + 1, right_index):
+                weight = (frame_index - left_index) / (right_index - left_index)
+                interpolated = self._blend_homography(
+                    right, left, current_weight=weight
+                )
+                if interpolated is not None:
+                    homographies[frame_index] = interpolated
 
         object_keys = {
             "player": "players" if "players" in tracks else "player",

@@ -55,7 +55,7 @@ Camera lia, zoom, che khuất, góc nhìn phối cảnh và chất lượng keyp
 - Phát hiện các keypoint/landmark sân bằng model keypoint.
 - Ước lượng homography từ landmark model sang tọa độ sân mục tiêu, dùng ghép ID landmark và RANSAC để loại correspondence ngoại lai.
 - Tạo minimap sân bóng, chiếu vị trí các đối tượng lên map và ghép minimap bán trong suốt vào video.
-- Tính vận tốc (km/h) và quãng đường tích lũy (m) của cầu thủ từ tọa độ sân đã chiếu (`position_pitch`).
+- Tính vận tốc (km/h) và quãng đường tích lũy (m) của cầu thủ từ `position_pitch`; khi homography không tạo được tọa độ này, dùng `position_transformed` chuyển từ `position_adjusted` làm phương án dự phòng theo mét.
 - Ước lượng thời lượng kiểm soát bóng theo đội.
 - Lưu kết quả inference trung gian dạng pickle stub để chạy lại nhanh khi chỉ chỉnh phần hiển thị hoặc phân tích.
 
@@ -72,12 +72,15 @@ Video đầu vào
    ├─ Ball interpolation ─────────────► quỹ đạo bóng liên tục hơn
    ├─ CameraMovement (optical flow) ──► ước lượng dịch chuyển camera
    ├─ MiniMap / homography RANSAC ────► position_pitch và position_minimap
-   ├─ Measurement ────────────────────► vận tốc và quãng đường
+   ├─ ViewTransformer ────────────────► position_transformed dự phòng từ position_adjusted
+   ├─ Measurement ────────────────────► ưu tiên position_pitch; fallback sang position_transformed
    ├─ Ball possession ────────────────► thống kê kiểm soát bóng
    └─ Annotation ─────────────────────► video đầu ra
 ```
 
 Pipeline được gọi từ `main.py`; phần chi tiết nằm trong các package dưới `src/`.
+
+Khi không tìm được homography đủ tin cậy ở một frame, pipeline dùng phép biến đổi phối cảnh cố định trong `experiment/View_Transform` để chuyển `position_adjusted` (tọa độ pixel đã bù dịch chuyển camera) thành `position_transformed` theo mét. Bộ tính chỉ số ưu tiên `position_pitch` nếu có và chỉ dùng tọa độ dự phòng khi thiếu. Phương án dự phòng giúp duy trì chỉ số qua các frame mất homography, nhưng độ chính xác phụ thuộc vào bốn điểm hiệu chuẩn cố định và có thể giảm khi góc camera thay đổi.
 
 ### Hướng tiếp cận thử nghiệm trong `experiment/`
 
@@ -189,10 +192,9 @@ Project sử dụng 3 mô hình Computer Vision chính để thực hiện các 
 | mAP@50 | 0.9729623458812067|
 | mAP@50-95 | 0.8206878211900737 |
 
-![Confusion matrix](../../runs/detect/runs/evaluation/player_only-3/confusion_matrix_normalized.png)
-![Evaluation Curves](../../runs/detect/runs/evaluation/player_only-3/BoxPR_curve.png)
+![Confusion Matrix](image-1.png)
+![Evaluation Curves](image-2.png)
 
-![Player Detection Results](path/to/player_results.png)
 
 ### 11.2. Ball Detection
 
@@ -209,9 +211,8 @@ Project sử dụng 3 mô hình Computer Vision chính để thực hiện các 
 
 **Visualization Results:**
 
-![Evaluation Curves](../../runs/detect/runs/evaluation/player_only-4/BoxPR_curve.png)
-![Confusion Matrix](../../runs/detect/runs/evaluation/player_only-4/confusion_matrix_normalized.png)
-![Ball Detection Results](path/to/ball_results.png)
+![Evaluation Curves](image-4.png)
+![Confusion Matrix](image-3.png)
 
 ### 11.3. Pitch Keypoint Detection
 
@@ -224,12 +225,12 @@ Project sử dụng 3 mô hình Computer Vision chính để thực hiện các 
 | Pose Precision |  0.9894305341861706 |
 | Pose Recall | 1.0 |
 | Pose mAP50| 0.995|
-Pose mAP50-95  0.7205
+Pose mAP50-95|  0.7205
 
 **Visualization Results:**
-![Evaluation Curves](../../runs/pose/runs/evaluation/keypoint/PosePR_curve.png)
-![Confusion Matrix](../../runs/pose/runs/evaluation/keypoint/confusion_matrix_normalized.png)
-![Pitch Keypoint Detection Results](path/to/keypoint_results.png)
+![Evaluation Curves](image-6.png)
+![Confusion Matrix](image-5.png)
+
 
 ### 11.4. Limitations
 

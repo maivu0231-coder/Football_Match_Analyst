@@ -5,6 +5,7 @@ from src.Distance_And_Velocity import Measurement
 from src.Team_Assigner import TeamAssigner
 from src.Tracker import Tracker
 from src.Minimap import MiniMap
+from experiment.View_Transform.view_transform import ViewTransformer
 
 input_video_path = "Personal_Project/Football_Analyst_Project/Inputs/Video_Project.mp4"
 output_video_path = "Personal_Project/Football_Analyst_Project/Outputs/Match_Video_R.mp4"
@@ -37,6 +38,11 @@ camera_movements = camera_movement_tracker.get_camera_movement(
     stub_path=camera_stub_path,
 )
 camera_movement_tracker.add_camera_position_to_tracks(tracks, camera_movements)
+
+# Keep a meter-scale fallback from camera-adjusted image coordinates for frames
+# where the pitch landmark homography cannot be estimated.
+view_transformer = ViewTransformer()
+tracks = view_transformer.add_transformed_position_to_tracks(tracks)
 
 # 5. Project every frame onto the pitch once and store shared coordinates.
 mini_map = MiniMap()

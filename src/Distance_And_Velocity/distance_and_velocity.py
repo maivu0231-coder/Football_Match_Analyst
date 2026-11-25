@@ -31,9 +31,12 @@ class Measurement:
                     track_info.pop("speed", None)
                     track_info.pop("velocity", None)
                     track_info.pop("distance", None)
-                    position = track_info.get(
-                        "position_pitch", track_info.get("position_transformed")
-                    )
+                    # Prefer the per-frame pitch homography. If it is absent,
+                    # use the legacy perspective transform of position_adjusted
+                    # (already stored in meters by ViewTransformer).
+                    position = track_info.get("position_pitch")
+                    if position is None:
+                        position = track_info.get("position_transformed")
                     if position is None:
                         continue
                     point = np.asarray(position, dtype=np.float64).reshape(-1)

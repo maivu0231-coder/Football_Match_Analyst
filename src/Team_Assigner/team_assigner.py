@@ -131,10 +131,13 @@ class TeamAssigner:
           most_common_team = Counter(votes).most_common(1)[0][0]
           self.player_team_dict[player_id] = most_common_team
 
+      # Manual override for the known player track.
+      self.player_team_dict[26] = 2
+
       # Phase 3: Apply team assignments and colors to all frames in tracks
       for player_dict in player_tracks_list:
           for player_id, track_info in player_dict.items():
-              team_id = self.player_team_dict.get(player_id, 1)
+              team_id = 2 if int(player_id) == 26 else self.player_team_dict.get(player_id, 1)
               track_info["team"] = team_id
               track_info["team_color"] = tuple(map(int, self.team_colors.get(team_id, [0, 0, 255])))
 
