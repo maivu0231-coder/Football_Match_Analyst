@@ -1,7 +1,6 @@
-
-
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Mapping
 from typing import Optional, Tuple
 
@@ -22,7 +21,6 @@ class MiniMap:
     NUM_LANDMARKS = 32
 
     # Standard pitch coordinates, indexed by the proposed 0..31 layout.
-    # Pass your own target_points/keypoint_to_target if model annotation order differs.
     DEFAULT_LANDMARKS_METERS = {
         0: (0.0, 0.0), 1: (0.0, 13.84), 2: (0.0, 24.84),
         3: (0.0, 43.16), 4: (0.0, 54.16), 5: (0.0, 68.0),
@@ -47,6 +45,8 @@ class MiniMap:
         keypoint_to_target: Optional[Mapping[int, int]] = None,
         background_color: Tuple[int, int, int] = (45, 125, 45),
         line_color: Tuple[int, int, int] = (245, 245, 245),
+        enable_ball_trail: bool = True,
+        ball_trail_length: int = 8,
     ):
         if width <= 2 * margin or height <= 2 * margin:
             raise ValueError("Mini-map dimensions must be larger than its margins")
@@ -55,10 +55,15 @@ class MiniMap:
         self.margin = int(margin)
         self.background_color = tuple(map(int, background_color))
         self.line_color = tuple(map(int, line_color))
+        self.enable_ball_trail = bool(enable_ball_trail)
+        self.ball_trail_length = int(ball_trail_length)
+        self._ball_history = deque(maxlen=self.ball_trail_length)
+
         scale = min(
             (self.width - 2 * self.margin) / self.PITCH_LENGTH,
             (self.height - 2 * self.margin) / self.PITCH_WIDTH,
         )
+        self.scale = scale
         self.pitch_pixel_length = self.PITCH_LENGTH * scale
         self.pitch_pixel_width = self.PITCH_WIDTH * scale
         self.pitch_left = (self.width - self.pitch_pixel_length) / 2.0
@@ -83,27 +88,10 @@ class MiniMap:
                 for point_id in range(self.NUM_LANDMARKS)
             }
 
-        # Correspondences inferred from the supplied labeled frames. Do not
-        # assume that an unmapped model index equals the target index.
         self.keypoint_to_target = {
-            13: 13,  # halfway line / far touchline
-            14: 14,  # halfway line / upper center-circle point
-            15: 17,  # halfway line / lower center-circle point
-            16: 18,  # halfway line / near touchline
-            17: 25,  # right penalty-area outer edge, top
-            18: 26,  # right penalty-area edge / goal-area top
-            19: 27,  # right penalty-area edge / goal-area bottom
-            20: 28,  # right penalty-area outer edge, bottom
-            21: 30,  # right goal-area inner edge, bottom
-            22: 29,  # right goal-area inner edge, top
-            23: 31,  # right penalty spot
-            24: 19,  # right goal line, top
-            25: 20,  # right goal line / penalty-area top
-            26: 21,  # right goal line / goal-area top
-            27: 22,  # right goal line / goal-area bottom
-            28: 23,  # right goal line / penalty-area bottom
-            30: 15,  # left point of center circle (low-confidence prediction)
-            31: 16,  # right point of center circle
+            13: 13, 14: 14, 15: 17, 16: 18, 17: 25, 18: 26,
+            19: 27, 20: 28, 21: 30, 22: 29, 23: 31, 24: 19,
+            25: 20, 26: 21, 27: 22, 28: 23, 30: 15, 31: 16,
         }
         if keypoint_to_target:
             self.keypoint_to_target.update(
@@ -125,7 +113,7 @@ class MiniMap:
         x, y = map(float, point)
         pitch_x = (x - self.pitch_left) / self.pitch_pixel_length * self.PITCH_LENGTH
         pitch_y = (y - self.pitch_top) / self.pitch_pixel_width * self.PITCH_WIDTH
-        return pitch_x, pitch_y
+        return float(pitch_x), float(pitch_y)
 
     def _pitch_point(self, x: float, y: float) -> Tuple[int, int]:
         px, py = self._meters_to_pixel(x, y)
@@ -142,7 +130,6 @@ class MiniMap:
         )
 
     def draw_minimap(self) -> np.ndarray:
-        """Create a clean mini-map image containing only pitch markings."""
         image = np.full(
             (self.height, self.width, 3), self.background_color, dtype=np.uint8
         )
@@ -153,7 +140,6 @@ class MiniMap:
         ga_top = (width - self.GOAL_AREA_WIDTH) / 2.0
         ga_bottom = width - ga_top
 
-        # Touchlines, goal lines, and halfway line.
         for start, end in (
             ((0.0, 0.0), (length, 0.0)),
             ((length, 0.0), (length, width)),
@@ -163,7 +149,6 @@ class MiniMap:
         ):
             self._draw_pitch_line(image, start, end)
 
-        # Penalty areas, goal areas, and penalty spots at each end.
         for goal_x, direction in ((0.0, 1.0), (length, -1.0)):
             pa_x = goal_x + direction * self.PENALTY_AREA_DEPTH
             ga_x = goal_x + direction * self.GOAL_AREA_DEPTH
@@ -210,14 +195,6 @@ class MiniMap:
         min_inlier_ratio: float = 0.15,
         keypoint_to_target: Optional[Mapping[int, int]] = None,
     ) -> Tuple[Optional[np.ndarray], dict]:
-        """Estimate frame-pixel -> mini-map-pixel homography using RANSAC.
-
-        ``image_keypoints`` is keyed by the model's stable keypoint index. Values
-        may be ``{"position": [x,y], "confidence": score}`` or ``[x,y]``.
-        Target coordinates are paired by ID, optionally translated through
-        ``keypoint_to_target``. Returns the matrix and correspondence diagnostics
-        (matched, inlier, and rejected IDs); returns ``None`` for an unusable fit.
-        """
         id_mapping = dict(self.keypoint_to_target)
         if keypoint_to_target is not None:
             id_mapping.update({int(k): int(v) for k, v in keypoint_to_target.items()})
@@ -228,8 +205,6 @@ class MiniMap:
                 model_id = int(raw_id)
             except (TypeError, ValueError):
                 continue
-            # Once an explicit map is configured, ignore model indices without
-            # a known target correspondence instead of guessing identity.
             if id_mapping and model_id not in id_mapping:
                 continue
             target_id = int(id_mapping[model_id] if id_mapping else model_id)
@@ -292,7 +267,6 @@ class MiniMap:
             info["inlier_count"] / len(inliers) if len(inliers) else 0.0
         )
 
-        # Reject fits supported by a small or tightly clustered patch of the pitch.
         inlier_target_points = dst[inliers].astype(np.float32)
         hull_area = (
             float(cv2.contourArea(cv2.convexHull(inlier_target_points)))
@@ -325,13 +299,13 @@ class MiniMap:
             info["reason"] = "RANSAC inliers are insufficient or collinear"
             homography = None
         elif not info["success"]:
-            # Keep a mathematically usable fit so the map does not disappear
-            # because the broadcast view exposes only a few landmarks.
             info["reason"] = "weak RANSAC fit; displaying with extra smoothing"
         self.last_homography_info = info
         return homography, info
 
-    def transform_point(self, point, homography: np.ndarray) -> Optional[Tuple[float, float]]:
+    def transform_point(
+        self, point, homography: np.ndarray, is_ball: bool = False
+    ) -> Optional[Tuple[float, float]]:
         if homography is None or point is None:
             return None
         point_array = np.asarray(point, dtype=np.float32).reshape(1, 1, 2)
@@ -339,29 +313,37 @@ class MiniMap:
         x, y = map(float, projected.reshape(2))
         if not np.isfinite([x, y]).all():
             return None
-        # Bad projective fits often fling players far beyond the pitch.
-        # Reject these positions instead of drawing them at arbitrary edges.
-        if x < -8 or x > self.width + 8 or y < -8 or y > self.height + 8:
+
+        # Cho phép biên rộng hơn cho bóng khi bay cao, tránh bóng biến mất
+        margin = 25.0 if is_ball else 8.0
+        if (
+            x < self.pitch_left - margin
+            or x > self.pitch_left + self.pitch_pixel_length + margin
+            or y < self.pitch_top - margin
+            or y > self.pitch_top + self.pitch_pixel_width + margin
+        ):
             return None
         return x, y
 
     @staticmethod
-    def _track_image_position(track, object_type):
-        # Homography maps the pitch plane (z=0). Use the ball box's bottom-center
-        # as the closest image-space proxy to its ground projection; the center
-        # drifts farther from the ground mapping when the ball is airborne.
-        if object_type == "ball":
-            bbox = track.get("bbox")
-            if bbox is not None and len(bbox) >= 4:
-                x1, y1, x2, y2 = map(float, bbox[:4])
-                return ((x1 + x2) / 2.0, y2)
+    def _track_image_position(track, object_type: str):
+        """Lấy vị trí 2D của track trên ảnh:
+        - Với bóng: ưu tiên tâm bóng (position hoặc tâm bbox) để triệt tiêu rung giật viền cỏ.
+        - Với cầu thủ/trọng tài: lấy đáy bbox (vị trí bàn chân chạm mặt sân).
+        """
         position = track.get("position")
-        if position is not None:
-            return position
+        if position is not None and len(position) >= 2:
+            return float(position[0]), float(position[1])
+
         bbox = track.get("bbox")
         if bbox is None or len(bbox) < 4:
             return None
+
         x1, y1, x2, y2 = map(float, bbox[:4])
+        if object_type == "ball":
+            # Dùng tâm bbox cho quả bóng
+            return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+        # Dùng đáy bbox cho bàn chân cầu thủ
         return ((x1 + x2) / 2.0, y2)
 
     def project_tracks(
@@ -371,7 +353,7 @@ class MiniMap:
         homography: np.ndarray,
         smoothing: bool = True,
     ) -> dict:
-        """Project player, referee, and ball positions to mini-map pixels."""
+        """Chiếu toạ độ cầu thủ, trọng tài và bóng lên minimap pixel."""
         projected = {"player": {}, "referee": {}, "ball": {}}
         if homography is None:
             return projected
@@ -392,10 +374,16 @@ class MiniMap:
                     used_stored_position = True
                 else:
                     image_position = self._track_image_position(track, object_type)
-                    map_position = self.transform_point(image_position, homography)
+                    map_position = self.transform_point(
+                        image_position, homography, is_ball=(object_type == "ball")
+                    )
                     used_stored_position = False
+
                 if map_position is not None:
-                    if smoothing and not used_stored_position:
+                    # Giữ phép chiếu bóng theo frame gốc. Làm mượt nhân quả ở
+                    # đây có thể biến một lỗi homography đơn frame thành vệt
+                    # bóng kéo dài; bóng được lọc hậu kỳ trên toàn chuỗi.
+                    if smoothing and not used_stored_position and object_type != "ball":
                         map_position = self._smooth_track_position(
                             object_type, track_id, map_position, frame_index
                         )
@@ -403,8 +391,123 @@ class MiniMap:
                         "position": map_position,
                         "team_color": track.get("team_color"),
                         "team": track.get("team"),
+                        "confidence": track.get("confidence", 1.0),
                     }
+
         return projected
+
+    def _smooth_track_position(self, object_type, track_id, position, frame_index):
+        """Làm mượt toạ độ thích ứng theo loại đối tượng."""
+        key = (object_type, track_id)
+        current = np.asarray(position, dtype=np.float32)
+        previous_state = self._smoothed_positions.get(key)
+        if previous_state is None:
+            self._smoothed_positions[key] = (frame_index, current)
+            if object_type == "ball":
+                self._ball_smoothed_velocity[key] = np.zeros(2, dtype=np.float32)
+            return tuple(map(float, current))
+
+        previous_frame, previous = previous_state
+        elapsed = max(1, int(frame_index) - int(previous_frame))
+        if elapsed > 10:
+            self._smoothed_positions[key] = (frame_index, current)
+            if object_type == "ball":
+                self._ball_smoothed_velocity[key] = np.zeros(2, dtype=np.float32)
+            return tuple(map(float, current))
+
+        if object_type == "ball":
+            # Giới hạn vận tốc vật lý tối đa của bóng: ~40 m/s (~144 km/h)
+            max_ball_speed_mps = 40.0
+            max_step_pixel = max_ball_speed_mps * (self.scale / 30.0) * elapsed * 1.5
+
+            velocity = self._ball_smoothed_velocity.get(key, np.zeros(2, dtype=np.float32))
+            predicted = previous + velocity * elapsed
+            residual = current - predicted
+            residual_size = float(np.linalg.norm(residual))
+
+            if residual_size <= 2.0:
+                # Vùng chết (deadband): triệt tiêu hoàn toàn rung lắc nhỏ khi bóng lăn chậm/đứng yên
+                smoothed = predicted
+                velocity *= 0.85
+            elif residual_size <= 12.0:
+                # Bóng lăn bình thường: làm mượt nhẹ
+                smoothed = predicted + 0.40 * residual
+                velocity = 0.5 * velocity + 0.5 * ((smoothed - previous) / elapsed)
+            else:
+                # Bóng bị sút hoặc chuyền nhanh: phản hồi nhạy bén, chống trễ lag
+                correction = residual.copy()
+                if residual_size > max_step_pixel:
+                    correction *= (max_step_pixel / residual_size)
+                smoothed = predicted + 0.80 * correction
+                velocity = 0.3 * velocity + 0.7 * ((smoothed - previous) / elapsed)
+
+            actual_step = smoothed - previous
+            step_size = float(np.linalg.norm(actual_step))
+            if step_size > max_step_pixel:
+                smoothed = previous + actual_step * (max_step_pixel / step_size)
+
+            self._ball_smoothed_velocity[key] = velocity.astype(np.float32)
+        else:
+            # Cầu thủ di chuyển chậm, quán tính lớn
+            alpha = 0.20
+            delta = current - previous
+            distance = float(np.linalg.norm(delta))
+            max_step = 6.0 * elapsed
+            if distance > max_step:
+                current = previous + delta * (max_step / distance)
+            smoothed = previous * (1.0 - alpha) + current * alpha
+
+        self._smoothed_positions[key] = (frame_index, smoothed)
+        return tuple(map(float, smoothed))
+
+    def _interpolate_missing_ball_detections(self, tracks: dict, max_gap: int = 8):
+        """Lấp đầy các frame bị mất dấu bóng (missed detections) qua nội suy."""
+        ball_frames = tracks.get("ball", [])
+        if not ball_frames:
+            return
+
+        # Gom nhóm toạ độ bóng đã biết
+        known_ball_frames = []
+        for f_idx, f_data in enumerate(ball_frames):
+            for b_id, b_info in f_data.items():
+                if "position_minimap" in b_info:
+                    known_ball_frames.append(
+                        (
+                            f_idx,
+                            b_id,
+                            np.asarray(b_info["position_minimap"], dtype=np.float64),
+                        )
+                    )
+                    break
+
+        if len(known_ball_frames) < 2:
+            return
+
+        # Tìm và nội suy các khoảng trống (gap <= max_gap)
+        for i in range(len(known_ball_frames) - 1):
+            f_start, b_id, p_start = known_ball_frames[i]
+            f_end, end_ball_id, p_end = known_ball_frames[i + 1]
+            gap = f_end - f_start
+
+            # Never invent a cross-pitch flight across a missing-detection gap.
+            # At this map scale, 12 px/frame is already a generous ball speed.
+            speed_per_frame = float(np.linalg.norm(p_end - p_start)) / max(1, gap)
+            if (
+                1 < gap <= max_gap
+                and b_id == end_ball_id
+                and speed_per_frame <= 12.0
+            ):
+                for step, mid_frame in enumerate(range(f_start + 1, f_end), start=1):
+                    alpha = step / gap
+                    interp_pos = p_start * (1.0 - alpha) + p_end * alpha
+                    if mid_frame >= len(ball_frames):
+                        continue
+                    if b_id not in ball_frames[mid_frame]:
+                        ball_frames[mid_frame][b_id] = {
+                            "position_minimap": interp_pos.tolist(),
+                            "position_pitch": list(self._pixel_to_meters(interp_pos)),
+                            "interpolated": True,
+                        }
 
     def add_pitch_positions_to_tracks(
         self,
@@ -414,12 +517,7 @@ class MiniMap:
         min_inliers: int = 5,
         min_inlier_ratio: float = 0.4,
     ) -> dict:
-        """Store homography-projected mini-map pixels and pitch meters on tracks.
-
-        Player/referee ground points use bbox bottom-center; ball uses bbox
-        bottom-center as an approximate ground projection. These saved values
-        are shared by mini-map rendering and distance/velocity measurements.
-        """
+        """Gán toạ độ minimap pixel và pitch meters chuẩn xác cho toàn bộ video."""
         keypoint_frames = tracks.get("keypoints", [])
         frame_count = max(
             (len(tracks.get(key, [])) for key in ("player", "players", "referee", "ball")),
@@ -442,14 +540,12 @@ class MiniMap:
                 min_inliers=min_inliers,
                 min_inlier_ratio=min_inlier_ratio,
             )
-            # calculate_homography can return a geometrically possible but
-            # weak fit for visualization. Do not use that fit for metric
-            # coordinates; it is a common source of speed/distance spikes.
             if homography is not None and fit_info.get("success", False):
                 last_homography = homography
                 last_valid_frame = frame_index
             else:
                 homography = None
+
             if homography is None and (
                 last_homography is not None
                 and last_valid_frame is not None
@@ -458,10 +554,8 @@ class MiniMap:
                 homography = last_homography
             homographies[frame_index] = homography
 
-        # Seed the opening frames from the first usable calibration rather than
-        # leaving their coordinates empty.
         first_valid = next(
-            (index for index, homography in enumerate(homographies) if homography is not None),
+            (index for index, h in enumerate(homographies) if h is not None),
             None,
         )
         if first_valid is not None:
@@ -481,11 +575,16 @@ class MiniMap:
 
         self._smoothed_positions.clear()
         self._ball_smoothed_velocity.clear()
+
+        # Chiếu toạ độ cho các frame hợp lệ
         for frame_index, homography in enumerate(homographies):
             if homography is None:
                 continue
             projected = self.project_tracks(
-                tracks, frame_index, homography, smoothing=True
+                tracks,
+                frame_index,
+                homography,
+                smoothing=True,
             )
             for object_type, key in object_keys.items():
                 frames = tracks.get(key, [])
@@ -499,111 +598,104 @@ class MiniMap:
                     track["position_minimap"] = [float(map_position[0]), float(map_position[1])]
                     track["position_pitch"] = list(self._pixel_to_meters(map_position))
 
-        # Fill frames where this track exists but that frame had no usable H.
-        # Both saved coordinate forms are interpolated together so the mini-map
-        # and measurement code continue to use the exact same ground position.
-        for object_type, key in object_keys.items():
-            object_frames = tracks.get(key, [])
-            observations = {}
-            for frame_index, frame_tracks in enumerate(object_frames):
-                for track_id, track in frame_tracks.items():
-                    observations.setdefault(track_id, []).append((frame_index, track))
+        # Lấp đầy các frame bị mất dấu bóng (missed detections)
+        self._interpolate_missing_ball_detections(tracks, max_gap=8)
 
-            for records in observations.values():
-                known = [
-                    (frame_index, np.asarray(track["position_minimap"], dtype=np.float64))
-                    for frame_index, track in records
-                    if track.get("position_minimap") is not None
-                ]
-                if not known:
-                    continue
-                known_frames = np.asarray([frame for frame, _ in known], dtype=np.float64)
-                known_positions = np.asarray([position for _, position in known], dtype=np.float64)
-                for frame_index, track in records:
-                    if track.get("position_minimap") is not None:
-                        continue
-                    interpolated = [
-                        float(np.interp(frame_index, known_frames, known_positions[:, axis]))
-                        for axis in range(2)
-                    ]
-                    track["position_minimap"] = interpolated
-                    track["position_pitch"] = list(self._pixel_to_meters(interpolated))
+        # Lọc mịn và xử lý quỹ đạo bóng bổng
+        self._interpolate_airborne_ball_segments(tracks, object_keys["player"])
+        self._smooth_ball_track_positions(tracks)
 
-        # Retain the per-frame transforms for rendering diagnostics, then clear
-        # the streaming fallback state so frame zero cannot reuse the last frame's H.
         self._homographies_by_frame = homographies
         self._last_valid_homography = None
         self._last_valid_homography_frame = None
         return tracks
 
-    def _smooth_track_position(self, object_type, track_id, position, frame_index):
-        """Stabilize projected tracks without making the ball trail the play."""
-        key = (object_type, track_id)
-        current = np.asarray(position, dtype=np.float32)
-        previous_state = self._smoothed_positions.get(key)
-        if previous_state is None:
-            self._smoothed_positions[key] = (frame_index, current)
-            return tuple(map(float, current))
+    def _interpolate_airborne_ball_segments(self, tracks, player_key):
+        """Khắc phục hiện tượng bóng bổng bị biến dạng do góc nhìn phối cảnh."""
+        ball_frames = tracks.get("ball", [])
+        by_ball_id = {}
+        for frame_index, frame_tracks in enumerate(ball_frames):
+            for ball_id, ball in frame_tracks.items():
+                map_point = ball.get("position_minimap")
+                if map_point is None:
+                    continue
+                by_ball_id.setdefault(ball_id, []).append({
+                    "frame": frame_index,
+                    "ball": ball,
+                    "map": np.asarray(map_point, dtype=float),
+                })
 
-        previous_frame, previous = previous_state
-        elapsed = max(1, int(frame_index) - int(previous_frame))
-        if elapsed > 5:
-            self._smoothed_positions[key] = (frame_index, current)
-            if object_type == "ball":
-                self._ball_smoothed_velocity[key] = np.zeros(2, dtype=np.float32)
-            return tuple(map(float, current))
+        for records in by_ball_id.values():
+            if len(records) < 5:
+                continue
+            records.sort(key=lambda item: item["frame"])
 
-        if object_type == "ball":
-            velocity = self._ball_smoothed_velocity.get(
-                key, np.zeros(2, dtype=np.float32)
-            )
-            predicted = previous + velocity * elapsed
-            residual = current - predicted
-            residual_size = float(np.linalg.norm(residual))
+            # Phát hiện bất thường vận tốc giả do bóng bay bổng
+            speeds = [0.0]
+            for i in range(1, len(records)):
+                gap = max(1, records[i]["frame"] - records[i - 1]["frame"])
+                dist = np.linalg.norm(records[i]["map"] - records[i - 1]["map"])
+                speeds.append(dist / gap)
 
-            if residual_size <= 2.5:
-                # Ignore tiny frame-to-frame projection wobble.
-                smoothed = predicted
-                velocity *= 0.85
-            elif residual_size <= 16.0:
-                # Damp moderate jitter while allowing smooth rolling movement.
-                smoothed = predicted + 0.22 * residual
-                observed_velocity = (smoothed - previous) / elapsed
-                velocity = 0.6 * velocity + 0.4 * observed_velocity
-            else:
-                # A large residual is likely a real kick. Follow it quickly,
-                # with a per-frame cap to suppress a one-frame false detection.
-                correction = residual.copy()
-                max_correction = 34.0 * elapsed
-                if residual_size > max_correction:
-                    correction *= max_correction / residual_size
-                direction_agreement = float(np.dot(velocity, residual))
-                gain = 0.76 if direction_agreement >= 0 else 0.62
-                smoothed = predicted + gain * correction
-                observed_velocity = (smoothed - previous) / elapsed
-                velocity = 0.45 * velocity + 0.55 * observed_velocity
+            # Thay thế các đoạn vọt tốc độ bất thường bằng nội suy thẳng mượt
+            max_allowed_pixel_speed = 22.0
+            i = 1
+            while i < len(records) - 1:
+                if speeds[i] > max_allowed_pixel_speed:
+                    start = i - 1
+                    end = i + 1
+                    while end < len(records) - 1 and speeds[end] > max_allowed_pixel_speed:
+                        end += 1
 
-            max_speed = 38.0 * elapsed
-            actual_step = smoothed - previous
-            actual_step_size = float(np.linalg.norm(actual_step))
-            if actual_step_size > max_speed:
-                smoothed = previous + actual_step * (max_speed / actual_step_size)
-            self._ball_smoothed_velocity[key] = velocity.astype(np.float32)
-        else:
-            # Keep player and referee points steady against small homography noise.
-            alpha = 0.18
-            delta = current - previous
-            distance = float(np.linalg.norm(delta))
-            max_step = 5.0 * elapsed
-            if distance > max_step:
-                current = previous + delta * (max_step / distance)
-            smoothed = previous * (1.0 - alpha) + current * alpha
+                    p0 = records[start]["map"]
+                    p1 = records[end]["map"]
+                    f0 = records[start]["frame"]
+                    f1 = records[end]["frame"]
 
-        self._smoothed_positions[key] = (frame_index, smoothed)
-        return tuple(map(float, smoothed))
+                    segment_speed = (
+                        float(np.linalg.norm(p1 - p0)) / (f1 - f0)
+                        if f1 > f0 else float("inf")
+                    )
+                    if f1 > f0 and segment_speed <= 12.0:
+                        for k in range(start + 1, end):
+                            ratio = (records[k]["frame"] - f0) / (f1 - f0)
+                            p_interp = p0 * (1.0 - ratio) + p1 * ratio
+                            records[k]["ball"]["position_minimap"] = p_interp.tolist()
+                            records[k]["ball"]["position_pitch"] = list(self._pixel_to_meters(p_interp))
+                    i = end + 1
+                else:
+                    i += 1
+
+    def _smooth_ball_track_positions(self, tracks):
+        """Khử nhiễu rung giật tần số cao sau khi đã nội suy toàn bộ video."""
+        by_ball_id = {}
+        for frame_index, frame_tracks in enumerate(tracks.get("ball", [])):
+            for ball_id, ball in frame_tracks.items():
+                point = ball.get("position_minimap")
+                if point is not None:
+                    by_ball_id.setdefault(ball_id, []).append(
+                        (frame_index, ball, np.asarray(point, dtype=float))
+                    )
+
+        for records in by_ball_id.values():
+            if len(records) < 3:
+                continue
+            records.sort(key=lambda item: item[0])
+            original = np.asarray([item[2] for item in records])
+            filtered = original.copy()
+
+            for i in range(1, len(records) - 1):
+                if records[i + 1][0] - records[i - 1][0] <= 4:
+                    # Bộ lọc Gauss 3 điểm nhẹ nhàng bảo tồn các cú sút/đổi hướng
+                    filtered[i] = 0.20 * original[i - 1] + 0.60 * original[i] + 0.20 * original[i + 1]
+
+            for (_, ball, _), point in zip(records, filtered):
+                ball["position_minimap"] = point.tolist()
+                ball["position_pitch"] = list(self._pixel_to_meters(point))
 
     def draw_entities(self, minimap: np.ndarray, projected_tracks: dict) -> np.ndarray:
-        """Draw projected players, referees, and ball on an existing mini-map."""
+        """Vẽ cầu thủ, trọng tài và bóng (kèm vệt quỹ đạo bắt mắt)."""
+        # 1. Vẽ cầu thủ
         for track_id, data in projected_tracks.get("player", {}).items():
             x, y = map(int, np.round(data["position"]))
             team_id = data.get("team")
@@ -618,14 +710,44 @@ class MiniMap:
             cv2.putText(minimap, str(track_id), (x + 6, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 0, 0), 2, cv2.LINE_AA)
             cv2.putText(minimap, str(track_id), (x + 6, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1, cv2.LINE_AA)
 
+        # 2. Vẽ trọng tài
         for track_id, data in projected_tracks.get("referee", {}).items():
             x, y = map(int, np.round(data["position"]))
             cv2.drawMarker(minimap, (x, y), (255, 80, 20), cv2.MARKER_DIAMOND, 12, 2, cv2.LINE_AA)
 
-        for _, data in projected_tracks.get("ball", {}).items():
-            x, y = map(int, np.round(data["position"]))
-            cv2.circle(minimap, (x, y), 5, (0, 255, 255), -1, cv2.LINE_AA)
-            cv2.circle(minimap, (x, y), 6, (0, 0, 0), 1, cv2.LINE_AA)
+        # 3. Vẽ bóng kèm vệt chuyển động (Motion Trail)
+        ball_tracks = projected_tracks.get("ball", {})
+        if ball_tracks:
+            # Chọn quả bóng có độ tin cậy cao nhất (tránh bóng giả / false positives)
+            best_ball = max(
+                ball_tracks.values(),
+                key=lambda item: item.get("confidence", 1.0)
+            )
+            curr_pos = tuple(map(int, np.round(best_ball["position"])))
+            self._ball_history.append(curr_pos)
+
+            # Vẽ vệt đuôi quỹ đạo bóng (fading motion trail)
+            if self.enable_ball_trail and len(self._ball_history) > 1:
+                trail_pts = list(self._ball_history)
+                for idx in range(len(trail_pts) - 1):
+                    p_from = trail_pts[idx]
+                    p_to = trail_pts[idx + 1]
+                    progress = (idx + 1) / len(trail_pts)
+                    trail_thickness = max(1, int(round(3 * progress)))
+                    trail_color = (
+                        int(20 + 30 * progress),
+                        int(180 + 75 * progress),
+                        int(230 + 25 * progress),
+                    )
+                    cv2.line(minimap, p_from, p_to, trail_color, trail_thickness, cv2.LINE_AA)
+
+            # Vẽ bóng với 3 lớp nổi bật: Viền đen -> Viền trắng sáng -> Tâm cam/neon
+            bx, by = curr_pos
+            cv2.circle(minimap, (bx, by), 7, (0, 0, 0), -1, cv2.LINE_AA)       # Viền ngoài đen
+            cv2.circle(minimap, (bx, by), 6, (255, 255, 255), -1, cv2.LINE_AA) # Vòng đệm trắng
+            cv2.circle(minimap, (bx, by), 4, (0, 215, 255), -1, cv2.LINE_AA)   # Tâm vàng cam rực rỡ
+            cv2.circle(minimap, (bx, by), 1, (255, 255, 255), -1, cv2.LINE_AA) # Đốm sáng tâm bóng
+
         return minimap
 
     def render_minimap(
@@ -639,7 +761,6 @@ class MiniMap:
         min_inlier_ratio: float = 0.15,
         keypoint_to_target: Optional[Mapping[int, int]] = None,
     ) -> Tuple[np.ndarray, Optional[np.ndarray], dict]:
-        """Render pitch and entities; estimate homography from this frame if needed."""
         info = {"success": homography is not None}
         frame_has_saved_positions = False
         if tracks is not None and frame_index is not None:
@@ -686,8 +807,6 @@ class MiniMap:
                 and self._last_valid_homography_frame is not None
                 and frame_index - self._last_valid_homography_frame <= self.homography_hold_frames
             ):
-                # Tracks are precomputed for the whole video. Reuse the last
-                # usable transform on frames with missing/weak landmarks.
                 homography = self._last_valid_homography.copy()
                 info = dict(info)
                 info["usable"] = True
@@ -695,8 +814,6 @@ class MiniMap:
                 info["reused_previous_homography"] = True
                 info["reason"] = "reusing last valid homography"
             else:
-                # At the start of a video there is no previous transform yet.
-                # Look ahead briefly for the first frame with enough landmarks.
                 search_end = min(len(keypoint_frames), frame_index + 31)
                 for future_index in range(frame_index + 1, search_end):
                     candidate, candidate_info = self.calculate_homography(
@@ -737,7 +854,6 @@ class MiniMap:
         min_inlier_ratio: float = 0.15,
         alpha: float = 0.62,
     ) -> Tuple[np.ndarray, dict]:
-        """Overlay the frame's mini-map at the bottom-center of the video frame."""
         minimap, _, info = self.render_minimap(
             tracks=tracks,
             frame_index=frame_index,
