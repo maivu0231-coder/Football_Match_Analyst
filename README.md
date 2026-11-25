@@ -24,6 +24,11 @@ Dự án phân tích video bóng đá bằng computer vision: phát hiện và t
     - [3. Stub/cache](#3-stubcache)
     - [4. Tinh chỉnh minimap](#4-tinh-chỉnh-minimap)
   - [Results \& Evaluation](#results--evaluation)
+  - [11. Kết quả và đánh giá (Results \& Evaluation)](#11-kết-quả-và-đánh-giá-results--evaluation)
+    - [11.1. Player Detection](#111-player-detection)
+    - [11.2. Ball Detection](#112-ball-detection)
+    - [11.3. Pitch Keypoint Detection](#113-pitch-keypoint-detection)
+    - [11.4. Limitations](#114-limitations)
   - [Project Structure](#project-structure)
   - [References](#references)
 
@@ -35,7 +40,7 @@ Dự án phân tích video bóng đá bằng computer vision: phát hiện và t
 ## Demo
 
 Video kết quả mẫu được lưu tại `Outputs/Match_Video_R.mp4`. Ảnh dưới đây là khung hình trích từ kết quả:
-![Ảnh demo kết quả](image-1.png)
+![ảnh demo kết quả](image.png)
 
 ## Introduction
 
