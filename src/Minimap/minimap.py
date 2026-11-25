@@ -47,6 +47,7 @@ class MiniMap:
         line_color: Tuple[int, int, int] = (245, 245, 245),
         enable_ball_trail: bool = True,
         ball_trail_length: int = 8,
+        homography_smoothing_alpha: float = 0.5,
     ):
         if width <= 2 * margin or height <= 2 * margin:
             raise ValueError("Mini-map dimensions must be larger than its margins")
@@ -58,6 +59,10 @@ class MiniMap:
         self.enable_ball_trail = bool(enable_ball_trail)
         self.ball_trail_length = int(ball_trail_length)
         self._ball_history = deque(maxlen=self.ball_trail_length)
+        # 0.5: balance between temporal stability and camera-motion response.
+        self.homography_smoothing_alpha = float(
+            np.clip(homography_smoothing_alpha, 0.0, 1.0)
+        )
 
         scale = min(
             (self.width - 2 * self.margin) / self.PITCH_LENGTH,
@@ -103,6 +108,41 @@ class MiniMap:
         self.homography_hold_frames = 5
         self._smoothed_positions = {}
         self._ball_smoothed_velocity = {}
+
+    @staticmethod
+    def _blend_homography(current, previous, current_weight: float = 0.35):
+        """Temporally blend successive valid homographies without scale jumps."""
+        current = np.asarray(current, dtype=np.float64)
+        if current.shape != (3, 3) or not np.isfinite(current).all():
+            return None
+
+        def normalize(matrix):
+            scale = matrix[2, 2]
+            if abs(scale) < 1e-9:
+                scale = np.linalg.norm(matrix)
+            if abs(scale) < 1e-12:
+                return None
+            return matrix / scale
+
+        current = normalize(current)
+        if current is None:
+            return None
+        if previous is None:
+            return current
+
+        previous = normalize(np.asarray(previous, dtype=np.float64))
+        if previous is None or previous.shape != (3, 3) or not np.isfinite(previous).all():
+            return current
+        # H and -H represent the same projective transform; align signs before
+        # averaging so equivalent matrices cannot cancel each other out.
+        if float(np.sum(current * previous)) < 0.0:
+            current = -current
+        weight = float(np.clip(current_weight, 0.0, 1.0))
+        blended = (1.0 - weight) * previous + weight * current
+        blended = normalize(blended)
+        if blended is None or abs(float(np.linalg.det(blended))) < 1e-10:
+            return current
+        return blended
 
     def _meters_to_pixel(self, x: float, y: float) -> Tuple[float, float]:
         px = self.pitch_left + x / self.PITCH_LENGTH * self.pitch_pixel_length
@@ -472,11 +512,7 @@ class MiniMap:
             for b_id, b_info in f_data.items():
                 if "position_minimap" in b_info:
                     known_ball_frames.append(
-                        (
-                            f_idx,
-                            b_id,
-                            np.asarray(b_info["position_minimap"], dtype=np.float64),
-                        )
+                        (f_idx, b_id, np.asarray(b_info["position_minimap"], dtype=np.float64))
                     )
                     break
 
@@ -533,25 +569,34 @@ class MiniMap:
                 if frame_index < len(keypoint_frames)
                 else {}
             )
-            homography, fit_info = self.calculate_homography(
+            raw_homography, fit_info = self.calculate_homography(
                 keypoints,
                 confidence_threshold=confidence_threshold,
                 ransac_threshold=ransac_threshold,
                 min_inliers=min_inliers,
                 min_inlier_ratio=min_inlier_ratio,
             )
-            if homography is not None and fit_info.get("success", False):
-                last_homography = homography
-                last_valid_frame = frame_index
+
+            if raw_homography is not None and fit_info.get("success", False):
+                # Only blend a valid RANSAC fit into the temporal H state.
+                homography = self._blend_homography(
+                    raw_homography, last_homography
+                )
+                if homography is not None:
+                    last_homography = homography
+                    last_valid_frame = frame_index
+                else:
+                    homography = None
             else:
                 homography = None
 
+            # Reuse the last good H briefly when keypoints are temporarily lost.
             if homography is None and (
                 last_homography is not None
                 and last_valid_frame is not None
                 and frame_index - last_valid_frame <= self.homography_hold_frames
             ):
-                homography = last_homography
+                homography = last_homography.copy()
             homographies[frame_index] = homography
 
         first_valid = next(
@@ -667,31 +712,130 @@ class MiniMap:
                     i += 1
 
     def _smooth_ball_track_positions(self, tracks):
-        """Khử nhiễu rung giật tần số cao sau khi đã nội suy toàn bộ video."""
+        """
+        Smooth mapped ball coordinates with a constant-velocity Kalman model.
+
+        This is an offline pass after homography projection and short-gap
+        interpolation. An RTS backward pass reduces jitter without the lag
+        of a forward-only filter. Gaps longer than 20 frames split the track.
+        """
         by_ball_id = {}
         for frame_index, frame_tracks in enumerate(tracks.get("ball", [])):
             for ball_id, ball in frame_tracks.items():
                 point = ball.get("position_minimap")
                 if point is not None:
                     by_ball_id.setdefault(ball_id, []).append(
-                        (frame_index, ball, np.asarray(point, dtype=float))
+                        (frame_index, ball, np.asarray(point, dtype=np.float64))
                     )
 
         for records in by_ball_id.values():
             if len(records) < 3:
                 continue
             records.sort(key=lambda item: item[0])
-            original = np.asarray([item[2] for item in records])
-            filtered = original.copy()
 
-            for i in range(1, len(records) - 1):
-                if records[i + 1][0] - records[i - 1][0] <= 4:
-                    # Bộ lọc Gauss 3 điểm nhẹ nhàng bảo tồn các cú sút/đổi hướng
-                    filtered[i] = 0.20 * original[i - 1] + 0.60 * original[i] + 0.20 * original[i + 1]
+            segments = []
+            segment = [records[0]]
+            for record in records[1:]:
+                if record[0] - segment[-1][0] > 20:
+                    if len(segment) >= 3:
+                        segments.append(segment)
+                    segment = [record]
+                else:
+                    segment.append(record)
+            if len(segment) >= 3:
+                segments.append(segment)
 
-            for (_, ball, _), point in zip(records, filtered):
-                ball["position_minimap"] = point.tolist()
-                ball["position_pitch"] = list(self._pixel_to_meters(point))
+            for segment in segments:
+                count = len(segment)
+                measurements = [item[2] for item in segment]
+                filtered_states, filtered_covariances = [], []
+                predicted_states = [None] * count
+                predicted_covariances = [None] * count
+                transitions = [None] * count
+
+                state = np.array(
+                    [measurements[0][0], measurements[0][1], 0.0, 0.0],
+                    dtype=np.float64,
+                )
+                covariance = np.diag([16.0, 16.0, 100.0, 100.0])
+                identity = np.eye(4, dtype=np.float64)
+                observation = np.array(
+                    [[1.0, 0.0, 0.0, 0.0],
+                     [0.0, 1.0, 0.0, 0.0]],
+                    dtype=np.float64,
+                )
+                acceleration_variance = 12.0
+
+                for i, (frame_idx, ball, measurement) in enumerate(segment):
+                    if i == 0:
+                        transition = identity.copy()
+                        predicted_state = state.copy()
+                        predicted_covariance = covariance.copy()
+                    else:
+                        dt = float(max(1, frame_idx - segment[i - 1][0]))
+                        transition = np.array(
+                            [[1.0, 0.0, dt, 0.0],
+                             [0.0, 1.0, 0.0, dt],
+                             [0.0, 0.0, 1.0, 0.0],
+                             [0.0, 0.0, 0.0, 1.0]],
+                            dtype=np.float64,
+                        )
+                        q = acceleration_variance
+                        process_noise = q * np.array(
+                            [[dt**4 / 4.0, 0.0, dt**3 / 2.0, 0.0],
+                             [0.0, dt**4 / 4.0, 0.0, dt**3 / 2.0],
+                             [dt**3 / 2.0, 0.0, dt**2, 0.0],
+                             [0.0, dt**3 / 2.0, 0.0, dt**2]],
+                            dtype=np.float64,
+                        )
+                        predicted_state = transition @ state
+                        predicted_covariance = (
+                            transition @ covariance @ transition.T + process_noise
+                        )
+
+                    predicted_states[i] = predicted_state
+                    predicted_covariances[i] = predicted_covariance
+                    transitions[i] = transition
+
+                    # Interpolated points are less reliable than YOLO detections.
+                    variance = 12.0 if ball.get("interpolated", False) else 4.0
+                    measurement_noise = np.diag([variance, variance])
+                    innovation = measurement - observation @ predicted_state
+                    innovation_covariance = (
+                        observation @ predicted_covariance @ observation.T
+                        + measurement_noise
+                    )
+                    gain = (
+                        predicted_covariance @ observation.T
+                        @ np.linalg.inv(innovation_covariance)
+                    )
+                    state = predicted_state + gain @ innovation
+                    covariance = (
+                        identity - gain @ observation
+                    ) @ predicted_covariance
+
+                    filtered_states.append(state.copy())
+                    filtered_covariances.append(covariance.copy())
+
+                # RTS backward pass: use future measurements to refine past states.
+                smoothed_states = [item.copy() for item in filtered_states]
+                for i in range(count - 2, -1, -1):
+                    transition = transitions[i + 1]
+                    predicted_covariance = predicted_covariances[i + 1]
+                    smoother_gain = (
+                        filtered_covariances[i] @ transition.T
+                        @ np.linalg.pinv(predicted_covariance)
+                    )
+                    smoothed_states[i] = (
+                        filtered_states[i]
+                        + smoother_gain
+                        @ (smoothed_states[i + 1] - predicted_states[i + 1])
+                    )
+
+                for (_, ball, _), smoothed_state in zip(segment, smoothed_states):
+                    point = smoothed_state[:2]
+                    ball["position_minimap"] = point.tolist()
+                    ball["position_pitch"] = list(self._pixel_to_meters(point))
 
     def draw_entities(self, minimap: np.ndarray, projected_tracks: dict) -> np.ndarray:
         """Vẽ cầu thủ, trọng tài và bóng (kèm vệt quỹ đạo bắt mắt)."""
@@ -747,6 +891,8 @@ class MiniMap:
             cv2.circle(minimap, (bx, by), 6, (255, 255, 255), -1, cv2.LINE_AA) # Vòng đệm trắng
             cv2.circle(minimap, (bx, by), 4, (0, 215, 255), -1, cv2.LINE_AA)   # Tâm vàng cam rực rỡ
             cv2.circle(minimap, (bx, by), 1, (255, 255, 255), -1, cv2.LINE_AA) # Đốm sáng tâm bóng
+        else:
+            self._ball_history.clear()
 
         return minimap
 
