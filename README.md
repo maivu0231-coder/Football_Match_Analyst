@@ -167,8 +167,72 @@ Kiểm tra `keypoint_to_target` và `target_points` trong `src/Minimap/minimap.p
 
 Output hiện trực quan hóa tracking, màu đội, minimap, vị trí bóng và các chỉ số vận tốc/quãng đường, cùng thông tin kiểm soát bóng khi bật. `Outputs/Match_Video_R.mp4` là video kết quả mẫu được lưu trong project.
 
-Project chưa kèm bộ test/benchmark định lượng ground-truth cho detection, tracking, homography hoặc vận tốc. Cần đánh giá thêm trên các đoạn video có góc quay khác nhau, đặc biệt các đoạn lia/zoom, landmark ít hoặc bị che, trước khi dùng chỉ số như kết quả đo chính xác. Sai correspondence keypoint có thể làm vị trí trên minimap và vận tốc/quãng đường sai dù tracker vẫn giữ ID ổn định.
+## 11. Kết quả và đánh giá (Results & Evaluation)
 
+Project sử dụng 3 mô hình Computer Vision chính để thực hiện các nhiệm vụ phân tích trận đấu bóng đá. Mỗi mô hình được đánh giá riêng biệt dựa trên các chỉ số phù hợp với nhiệm vụ của nó.
+
+### 11.1. Player Detection
+
+Đánh giá khả năng phát hiện cầu thủ trên các hình ảnh thuộc tập dữ liệu kiểm thử (Test Set).
+
+**Evaluation Metrics:**
+
+| Metric | Result |
+|---|---|
+| Precision | 0.9840338512267189 |
+| Recall | 0.972972972972973|
+| mAP@50 | 0.9729623458812067|
+| mAP@50-95 | 0.8206878211900737 |
+
+![Confusion matrix](../../runs/detect/runs/evaluation/player_only-3/confusion_matrix_normalized.png)
+![Evaluation Curves](../../runs/detect/runs/evaluation/player_only-3/BoxPR_curve.png)
+
+![Player Detection Results](path/to/player_results.png)
+
+### 11.2. Ball Detection
+
+Đánh giá khả năng phát hiện quả bóng trong các tình huống thi đấu khác nhau, đặc biệt khi bóng có kích thước nhỏ hoặc xuất hiện ở khoảng cách xa.
+
+**Evaluation Metrics:**
+
+| Metric | Result |
+|---|---|
+| Precision | 0.9770897163080994 |
+| Recall | 0.5454545454545454 |
+| mAP@50 | 0.728 |
+| mAP@50-95 | 0.35719 |
+
+**Visualization Results:**
+
+![Evaluation Curves](../../runs/detect/runs/evaluation/player_only-4/BoxPR_curve.png)
+![Confusion Matrix](../../runs/detect/runs/evaluation/player_only-4/confusion_matrix_normalized.png)
+![Ball Detection Results](path/to/ball_results.png)
+
+### 11.3. Pitch Keypoint Detection
+
+Đánh giá khả năng xác định chính xác các điểm đặc trưng trên sân bóng. Các keypoint này được sử dụng để tính toán Homography, ánh xạ tọa độ từ hình ảnh thực tế sang mặt phẳng sân bóng và xây dựng MiniMap.
+
+**Evaluation Metrics:**
+
+| Metric | Result |
+|---|---|
+| Pose Precision |  0.9894305341861706 |
+| Pose Recall | 1.0 |
+| Pose mAP50| 0.995|
+Pose mAP50-95  0.7205
+
+**Visualization Results:**
+![Evaluation Curves](../../runs/pose/runs/evaluation/keypoint/PosePR_curve.png)
+![Confusion Matrix](../../runs/pose/runs/evaluation/keypoint/confusion_matrix_normalized.png)
+![Pitch Keypoint Detection Results](path/to/keypoint_results.png)
+
+### 11.4. Limitations
+
+Phân tích những hạn chế của từng mô hình thông qua kết quả thực nghiệm:
+
+- **Player Detection:** Khó phát hiện cầu thủ khi bị che khuất hoặc xuất hiện ở khoảng cách xa.
+- **Ball Detection:** Có thể bỏ sót bóng khi bóng di chuyển nhanh, kích thước nhỏ hoặc bị che khuất.
+- **Pitch Keypoint Detection:** Độ chính xác của keypoint có thể bị ảnh hưởng bởi góc quay camera, vật thể che khuất và chất lượng hình ảnh.
 ## Project Structure
 
 ```text
