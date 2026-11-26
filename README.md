@@ -40,7 +40,7 @@ Dự án phân tích video bóng đá bằng computer vision: phát hiện và t
 ## Demo
 
 Video kết quả mẫu được lưu tại `Outputs/Match_Video_R.mp4`. Ảnh dưới đây là khung hình trích từ kết quả:
-![ảnh demo kết quả](image-1.png)
+![ảnh demo kết quả](Images/image-1.png)
 
 ## Introduction
 
@@ -192,8 +192,8 @@ Project sử dụng 3 mô hình Computer Vision chính để thực hiện các 
 | mAP@50 | 0.9729623458812067|
 | mAP@50-95 | 0.8206878211900737 |
 
-![Confusion Matrix](image-2.png)
-![Evaluation Curves](image-3.png)
+![Confusion Matrix](Images/image-2.png)
+![Evaluation Curves](Images/image-3.png)
 
 
 ### 11.2. Ball Detection
@@ -211,8 +211,8 @@ Project sử dụng 3 mô hình Computer Vision chính để thực hiện các 
 
 **Visualization Results:**
 
-![Confusion Matrix](image-4.png)
-![Evaluation Curves](image-5.png)
+![Confusion Matrix](Images/image-4.png)
+![Evaluation Curves](Images/image-5.png)
 ### 11.3. Pitch Keypoint Detection
 
 Đánh giá khả năng xác định chính xác các điểm đặc trưng trên sân bóng. Các keypoint này được sử dụng để tính toán Homography, ánh xạ tọa độ từ hình ảnh thực tế sang mặt phẳng sân bóng và xây dựng MiniMap.
@@ -227,8 +227,8 @@ Project sử dụng 3 mô hình Computer Vision chính để thực hiện các 
 Pose mAP50-95|  0.7205
 
 **Visualization Results:**
-![Confusion Matrix](image-6.png)
-![Evaluation Curves](image-7.png)
+![Confusion Matrix](Images/image-6.png)
+![Evaluation Curves](Images/image-7.png)
 
 ### 11.4. Limitations
 
