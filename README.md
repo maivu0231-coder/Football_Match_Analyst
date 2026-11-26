@@ -109,10 +109,6 @@ Danh sách package nằm trong `requirements.txt`. Các phiên bản trong file 
 
 Các trọng số model được đặt trong `src/Models/`, gồm các file cho phát hiện bóng/cầu thủ và keypoint sân, ví dụ `balltracker.pt` và `downloaded_pitch.pt`. `Tracker` chịu trách nhiệm khởi tạo detector và ball model; model keypoint cung cấp landmark phục vụ homography.
 
-Thư mục hiện tại chứa trọng số nhưng không kèm đầy đủ dataset, cấu hình huấn luyện và script training có thể tái lập. Do đó README này không khẳng định nguồn dataset, số epoch hay metric đánh giá model. Muốn huấn luyện lại cần chuẩn bị dataset và cấu hình tương ứng với model, sau đó cập nhật đường dẫn trọng số trong mã nguồn.
-
-**Lưu ý correspondence landmark:** model ID và ID điểm trên sân mục tiêu phải khớp chính xác. Bản đồ ID hiện được khai báo trong `MiniMap`; các ID không có mapping sẽ không được dùng để fit homography. Chất lượng homography còn phụ thuộc số lượng, phân bố không gian, confidence và độ chính xác của keypoint trong frame.
-
 ## Installation
 
 ### Yêu cầu
